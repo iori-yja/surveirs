@@ -29,21 +29,24 @@ fn and<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> Image
     return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
 }
 
+fn brightness<P>(im: &ImageBuffer<P, Vec<u8>>) -> i64
+            where P: Pixel<Subpixel = u8> + 'static {
+    return im.pixels().fold(0 as i64, |b, p| b + p.to_luma().data[0] as i64);
+}
+
 fn diff<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
             where P: Pixel<Subpixel = u8> + 'static {
     let mut dst = Vec::with_capacity(ima.len());
     let dim = ima.dimensions();
-    /*
-    let suma: i64 = ima.iter().fold(0 as i64, |b, s| b + *s as i64);
-    let sumb: i64 = imb.iter().fold(0 as i64, |b, s| b + *s as i64);
-    */
+    let bria = brightness(ima);
+    let brib = brightness(imb);
 
     let bufa = ima.pixels();
     let bufb = imb.pixels();
     for (a, b) in bufa.zip(bufb) {
-        let ax = a.to_luma().data[0] as i64;
-        let bx = b.to_luma().data[0] as i64;
-        let p = if ax > bx {ax -bx} else {bx - ax};
+        let ax = a.to_luma().data[0] as i64 * brib;
+        let bx = b.to_luma().data[0] as i64 * bria;
+        let p = if ax > bx {ax -bx} else {bx - ax} * 2 / (brib + bria);
         dst.push(p as u8);
     }
     return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
@@ -68,13 +71,10 @@ fn binarize<P: Pixel<Subpixel = u8> + 'static>(im: &ImageBuffer<P, Vec<u8>>) -> 
 
 fn derivative<P>(im: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
             where P: Pixel<Subpixel = u8> + 'static {
-    let kernel: &[f32] = &[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
-    //let kernel: &[f32] = &[0.0,-1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0];
+    let kernel: &[f32] = &[0.0,-1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0];
     filter3x3(im, kernel)
 }
 
-//fn to_buffer<P, R>(img: JPEGDecoder<R>) -> ImageBuffer<P, Vec<u8>>
-//            where P: Pixel<Subpixel=u8> + 'static, R: Read {
 fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
     let dim = img.dimensions();
     let vec = img.read_image_with_progress(
@@ -126,12 +126,11 @@ fn main() {
     // first buffer comes slowly, so stash it.
     let frame = camera.capture().unwrap();
     adiff = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].to_vec()).unwrap().convert();
-    for i in 0..100 {
+    for i in 0..1000 {
         let mut sc = 0;
         let now = Utc::now();
         let frame = camera.capture().unwrap();
         let buf: GrayImage = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].to_vec()).unwrap().convert();
-        buf.save(&format!("movie/frame-{}.jpg", i)).unwrap();
         frames.push(buf);
         if i == 1 {
             adiff = binarize(&diff(&frames[i-1], &frames[i]));
@@ -143,7 +142,9 @@ fn main() {
             buf.save(format!("movie/diff-{}.jpg", i));
             adiff = bdiff;
         }
-        //let mut file = fs::File::create(&format!("frame-{}.bmp", i)).unwrap();
+        if sc > 100 {
+            frames[i].save(&format!("movie/frame-{}.jpg", i)).unwrap();
+        }
         println!("image {}, took {}, score: {}", i, Utc::now() - now, sc);
     }
 }
