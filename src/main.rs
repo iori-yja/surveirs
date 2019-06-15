@@ -1,43 +1,60 @@
 extern crate image;
+extern crate rscam;
+extern crate chrono;
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::env::args;
-use std::fs::File;
+use std::thread;
+use std::fs;
+use chrono::prelude::*;
+use rscam::{Camera, Config, FormatInfo, FormatIter};
 use image::{Pixel, ImageBuffer, Rgb, GrayImage, RgbImage, ImageDecoder, ImageResult, ConvertBuffer};
 use image::jpeg::{JPEGDecoder};
 use image::imageops::filter3x3;
 
-fn and<P>(ima: ImageBuffer<P, Vec<u8>>, imb: ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
+
+fn and<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
             where P: Pixel<Subpixel = u8> + 'static {
     let mut dst = Vec::with_capacity(ima.len());
     let dim = ima.dimensions();
 
-    let bufa = ima.into_raw();
-    let bufb = imb.into_raw();
-    for (a, b) in bufa.iter().zip(&bufb) {
-        let (ax, bx) = (*a as i64, *b as i64);
-        let p = if (ax - bx).abs() < 50 {*a} else {0};
+    let bufa = ima.pixels();
+    let bufb = imb.pixels();
+    for (a, b) in bufa.zip(bufb) {
+        let ax = a.to_luma().data[0] as i64;
+        let bx = b.to_luma().data[0] as i64;
+        let p = if (ax - bx).abs() < 50 {ax} else {0};
         dst.push(p as u8);
     }
     return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
 }
 
-fn diff<P>(ima: ImageBuffer<P, Vec<u8>>, imb: ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
+fn diff<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
             where P: Pixel<Subpixel = u8> + 'static {
     let mut dst = Vec::with_capacity(ima.len());
     let dim = ima.dimensions();
-    let suma: u64 = ima.iter().fold(0 as u64, |b, s| b + *s as u64);
-    let sumb: u64 = imb.iter().fold(0 as u64, |b, s| b + *s as u64);
+    /*
+    let suma: i64 = ima.iter().fold(0 as i64, |b, s| b + *s as i64);
+    let sumb: i64 = imb.iter().fold(0 as i64, |b, s| b + *s as i64);
+    */
 
-    let bufa = ima.into_raw();
-    let bufb = imb.into_raw();
-    for (a, b) in bufa.iter().zip(&bufb) {
-        let ax = *a as u64 * sumb;
-        let bx = *b as u64 * suma;
-        let p = if ax > bx {ax -bx} else {bx - ax} * 2 / (suma + sumb);
+    let bufa = ima.pixels();
+    let bufb = imb.pixels();
+    for (a, b) in bufa.zip(bufb) {
+        let ax = a.to_luma().data[0] as i64;
+        let bx = b.to_luma().data[0] as i64;
+        let p = if ax > bx {ax -bx} else {bx - ax};
         dst.push(p as u8);
     }
     return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
+}
+
+fn score<P: Pixel<Subpixel = u8> + 'static>(im: &ImageBuffer<P, Vec<u8>>) -> u64 {
+    let mut sc = 0;
+    for a in im.pixels() {
+        sc += if a.to_luma().data[0] > 64 {1} else {0};
+    }
+    return sc;
 }
 
 fn binarize<P: Pixel<Subpixel = u8> + 'static>(im: &ImageBuffer<P, Vec<u8>>) -> GrayImage {
@@ -70,7 +87,7 @@ fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
 }
 
 fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
-    return match File::open(name) {
+    return match fs::File::open(name) {
         Ok(f) => JPEGDecoder::new(f),
         Err(err) => Err(image::ImageError::IoError(err))
     };
@@ -78,21 +95,55 @@ fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
 
 fn main() {
     let mut arg: Vec<String> = args().collect();
-    let mut file_a = &"move/snap-s.jpg".to_string();
-    let mut file_b = &"move/snap-t.jpg".to_string();
-    let mut file_c = &"move/snap-u.jpg".to_string();
-    if arg.len() > 2 {
-        file_a = &arg[1];
-        file_b = &arg[2];
-        file_c = &arg[3];
-    }
+    let mut camera = if arg.len() > 2 {
+        Camera::new(&arg[1]).unwrap()
+    } else {
+        Camera::new("/dev/video0").unwrap()
+    };
 
-    let buf1 = diff(to_buffer(prepare(file_a).unwrap()),
-                      to_buffer(prepare(file_b).unwrap()));
-    let buf2 = diff(to_buffer(prepare(file_b).unwrap()),
-                      to_buffer(prepare(file_c).unwrap()));
-    buf1.save("move/subst1.jpg").unwrap();
-    buf2.save("move/subst2.jpg").unwrap();
-    let buf3 = and(binarize(&buf1), binarize(&buf2));
-    buf3.save("move/subst3.jpg").unwrap();
+    camera.start(&Config {
+        interval: (1, 10),
+        resolution: (1280, 720),
+        format: b"RGB3",
+        ..Default::default()
+    }).unwrap();
+
+    let mut frames: Vec<GrayImage> = Vec::with_capacity(10);
+    let mut adiff: GrayImage;
+    /*
+    for i in 0..10 {
+        frames.push(to_buffer(prepare(&format!("frame-{}.jpg", i)).unwrap()));
+    }
+    for i in 1..9 {
+        let buf1 = diff(&frames[i-1], &frames[i]);
+        let buf2 = diff(&frames[i], &frames[i+1]);
+        let buf = and(&buf1, &buf2);
+        buf.save(format!("diff-{}.jpg", i)).unwrap();
+    }
+    */
+
+
+    // first buffer comes slowly, so stash it.
+    let frame = camera.capture().unwrap();
+    adiff = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].to_vec()).unwrap().convert();
+    for i in 0..100 {
+        let mut sc = 0;
+        let now = Utc::now();
+        let frame = camera.capture().unwrap();
+        let buf: GrayImage = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].to_vec()).unwrap().convert();
+        buf.save(&format!("movie/frame-{}.jpg", i)).unwrap();
+        frames.push(buf);
+        if i == 1 {
+            adiff = binarize(&diff(&frames[i-1], &frames[i]));
+        }
+        if i > 1 {
+            let bdiff = binarize(&diff(&frames[i-1], &frames[i]));
+            let buf = and(&bdiff, &adiff);
+            sc = score(&buf);
+            buf.save(format!("movie/diff-{}.jpg", i));
+            adiff = bdiff;
+        }
+        //let mut file = fs::File::create(&format!("frame-{}.bmp", i)).unwrap();
+        println!("image {}, took {}, score: {}", i, Utc::now() - now, sc);
+    }
 }
