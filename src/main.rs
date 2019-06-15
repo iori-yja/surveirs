@@ -2,13 +2,12 @@ extern crate image;
 extern crate rscam;
 extern crate chrono;
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::env::args;
-use std::thread;
 use std::fs;
 use chrono::prelude::*;
-use rscam::{Camera, Config, FormatInfo, FormatIter};
-use image::{Pixel, ImageBuffer, Rgb, GrayImage, RgbImage, ImageDecoder, ImageResult, ConvertBuffer};
+use rscam::{Camera, Config};
+use image::{Pixel, ImageBuffer, Luma, GrayImage, RgbImage, ImageDecoder, ImageResult, ConvertBuffer};
 use image::jpeg::{JPEGDecoder};
 use image::imageops::filter3x3;
 
@@ -94,7 +93,7 @@ fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
 }
 
 fn main() {
-    let mut arg: Vec<String> = args().collect();
+    let arg: Vec<String> = args().collect();
     let mut camera = if arg.len() > 2 {
         Camera::new(&arg[1]).unwrap()
     } else {
@@ -104,9 +103,13 @@ fn main() {
     camera.start(&Config {
         interval: (1, 10),
         resolution: (1280, 720),
-        format: b"RGB3",
+        format: b"YUYV",
         ..Default::default()
     }).unwrap();
+    for feat in camera.formats() {
+        let info = feat.unwrap();
+        println!("{:?}: {}", info.format, info.description);
+    }
 
     let mut frames: Vec<GrayImage> = Vec::with_capacity(10);
     let mut adiff: GrayImage;
@@ -125,12 +128,13 @@ fn main() {
 
     // first buffer comes slowly, so stash it.
     let frame = camera.capture().unwrap();
-    adiff = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].to_vec()).unwrap().convert();
+    adiff = ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].iter().skip(1).step_by(1).cloned().collect()).unwrap().convert();
+
     for i in 0..1000 {
         let mut sc = 0;
         let now = Utc::now();
         let frame = camera.capture().unwrap();
-        let buf: GrayImage = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].to_vec()).unwrap().convert();
+        let buf: GrayImage = ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].iter().step_by(2).cloned().collect()).unwrap().convert();
         frames.push(buf);
         if i == 1 {
             adiff = binarize(&diff(&frames[i-1], &frames[i]));
@@ -139,12 +143,12 @@ fn main() {
             let bdiff = binarize(&diff(&frames[i-1], &frames[i]));
             let buf = and(&bdiff, &adiff);
             sc = score(&buf);
-            buf.save(format!("movie/diff-{}.jpg", i));
+            buf.save(format!("movie/diff-{:>08}.jpg", i)).unwrap();
             adiff = bdiff;
         }
         if sc > 100 {
-            frames[i].save(&format!("movie/frame-{}.jpg", i)).unwrap();
+            frames[i].save(&format!("movie/frame-{:>08}.jpg", i)).unwrap();
         }
-        println!("image {}, took {}, score: {}", i, Utc::now() - now, sc);
+        println!("image {:>08}, took {}, score: {}", i, Utc::now() - now, sc);
     }
 }
