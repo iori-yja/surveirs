@@ -1,10 +1,12 @@
 extern crate image;
 extern crate rscam;
 extern crate chrono;
+extern crate clap;
 
 use std::io::Read;
-use std::env::args;
+use std::env;
 use std::fs;
+use clap::{Arg, App};
 use chrono::prelude::*;
 use rscam::{Camera, Config};
 use image::{Pixel, ImageBuffer, Luma, GrayImage, RgbImage, ImageDecoder, ImageResult, ConvertBuffer};
@@ -48,7 +50,7 @@ fn diff<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> Imag
         let p = if ax > bx {ax -bx} else {bx - ax} * 2 / (brib + bria);
         dst.push(p as u8);
     }
-    return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
+    return ImageBuffer::from_vec(dim.0, dim.1, dst).unwrap();
 }
 
 fn score<P: Pixel<Subpixel = u8> + 'static>(im: &ImageBuffer<P, Vec<u8>>) -> u64 {
@@ -81,8 +83,17 @@ fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
         ).unwrap();
     println!("size in read: {}kB. dim0 x dim1 = {} x {} = {}",
              vec.len() / 1000, dim.0, dim.1, dim.0 * dim.1);
-    let buf: RgbImage = ImageBuffer::from_vec(dim.0 as u32, dim.1 as u32, vec).expect("test2");
+    let buf: RgbImage = ImageBuffer::from_vec(dim.0 as u32, dim.1 as u32, vec).unwrap();
     return buf.convert();
+}
+
+fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
+    return ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(
+        1280, 720, // size is temporary fixed as its camera setting
+        data.iter()
+        .step_by(2) // skip u and v data
+        .cloned().collect()
+    ).unwrap();
 }
 
 fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
@@ -93,26 +104,34 @@ fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
 }
 
 fn main() {
-    let arg: Vec<String> = args().collect();
-    let mut camera = if arg.len() > 2 {
-        Camera::new(&arg[1]).unwrap()
-    } else {
-        Camera::new("/dev/video0").unwrap()
-    };
+    let matches = App::new("small recorder")
+        .version("0.0.1")
+        .arg(Arg::with_name("device")
+             .long("dev")
+             .takes_value(true)
+             .default_value("/dev/video0")
+             .help("device name"))
+        .arg(Arg::with_name("forever")
+             .short("f")
+             .help("run forever"))
+        .get_matches();
 
+    let mut camera = match Camera::new(matches.value_of("device").unwrap()) {
+        Ok(c) => c,
+        Err(e) => panic!{format!("failed to open camera: {}", e)}
+    };
     camera.start(&Config {
         interval: (1, 10),
         resolution: (1280, 720),
         format: b"YUYV",
         ..Default::default()
-    }).unwrap();
+    }).expect("failed to start camera");
     for feat in camera.formats() {
         let info = feat.unwrap();
         println!("{:?}: {}", info.format, info.description);
     }
 
     let mut frames: Vec<GrayImage> = Vec::with_capacity(10);
-    let mut adiff: GrayImage;
     /*
     for i in 0..10 {
         frames.push(to_buffer(prepare(&format!("frame-{}.jpg", i)).unwrap()));
@@ -128,18 +147,18 @@ fn main() {
 
     // first buffer comes slowly, so stash it.
     let frame = camera.capture().unwrap();
-    adiff = ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].iter().skip(1).step_by(1).cloned().collect()).unwrap().convert();
+    // To be filled in i == 1 condition before use
+    let mut adiff: GrayImage = ImageBuffer::new(0,0);
 
-    for i in 0..1000 {
+    let mut i = 0;
+    while i < 1000 || matches.is_present("forever") {
         let mut sc = 0;
         let now = Utc::now();
         let frame = camera.capture().unwrap();
-        let buf: GrayImage = ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(1280, 720, frame[..].iter().step_by(2).cloned().collect()).unwrap().convert();
-        frames.push(buf);
+        frames.push(from_yuyv_vec(frame[..].to_vec()));
         if i == 1 {
             adiff = binarize(&diff(&frames[i-1], &frames[i]));
-        }
-        if i > 1 {
+        } else if i > 1 {
             let bdiff = binarize(&diff(&frames[i-1], &frames[i]));
             let buf = and(&bdiff, &adiff);
             sc = score(&buf);
@@ -150,5 +169,6 @@ fn main() {
             frames[i].save(&format!("movie/frame-{:>08}.jpg", i)).unwrap();
         }
         println!("image {:>08}, took {}, score: {}", i, Utc::now() - now, sc);
+        i += 1;
     }
 }
