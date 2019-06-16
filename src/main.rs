@@ -103,6 +103,30 @@ fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
     };
 }
 
+struct CameraIter { camera: Camera }
+struct ImageDirIter { dir: fs::ReadDir }
+
+impl Iterator for CameraIter {
+    type Item = GrayImage;
+    fn next(&mut self) -> Option<Self::Item> {
+        let frame = self.camera.capture().unwrap();
+        return Some(from_yuyv_vec(frame[..].to_vec()));
+    }
+}
+
+impl Iterator for ImageDirIter {
+    type Item = GrayImage;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.dir.next() {
+            Some(entry) => match prepare(&entry.map(|e| e.file_name().to_str().unwrap().to_string()).unwrap()) {
+                Ok(image) => Some(to_buffer(image)),
+                Err(_) => None,
+            }
+            None => None,
+        }
+    }
+}
+
 fn main() {
     let matches = App::new("small recorder")
         .version("0.0.1")
@@ -114,6 +138,11 @@ fn main() {
         .arg(Arg::with_name("forever")
              .short("f")
              .help("run forever"))
+        .arg(Arg::with_name("dir")
+             .short("i")
+             .long("image")
+             .takes_value(true)
+             .help("image directory used instead of camera"))
         .get_matches();
 
     let mut camera = match Camera::new(matches.value_of("device").unwrap()) {
@@ -131,44 +160,21 @@ fn main() {
         println!("{:?}: {}", info.format, info.description);
     }
 
-    let mut frames: Vec<GrayImage> = Vec::with_capacity(10);
-    /*
-    for i in 0..10 {
-        frames.push(to_buffer(prepare(&format!("frame-{}.jpg", i)).unwrap()));
-    }
-    for i in 1..9 {
-        let buf1 = diff(&frames[i-1], &frames[i]);
-        let buf2 = diff(&frames[i], &frames[i+1]);
-        let buf = and(&buf1, &buf2);
-        buf.save(format!("diff-{}.jpg", i)).unwrap();
-    }
-    */
-
-
-    // first buffer comes slowly, so stash it.
-    let frame = camera.capture().unwrap();
     // To be filled in i == 1 condition before use
-    let mut adiff: GrayImage = ImageBuffer::new(0,0);
+    let white: GrayImage = ImageBuffer::from_pixel(1280,720, Luma{data: [0]});
 
-    let mut i = 0;
-    while i < 1000 || matches.is_present("forever") {
-        let mut sc = 0;
-        let now = Utc::now();
-        let frame = camera.capture().unwrap();
-        frames.push(from_yuyv_vec(frame[..].to_vec()));
-        if i == 1 {
-            adiff = binarize(&diff(&frames[i-1], &frames[i]));
-        } else if i > 1 {
-            let bdiff = binarize(&diff(&frames[i-1], &frames[i]));
-            let buf = and(&bdiff, &adiff);
-            sc = score(&buf);
-            buf.save(format!("movie/diff-{:>08}.jpg", i)).unwrap();
-            adiff = bdiff;
-        }
+    let mut iter = CameraIter{camera};
+    let f = iter.next().unwrap();
+
+    iter.fold((0, f, white), |(i, prev, dif), n| {
+        let d = binarize(&diff(&prev, &n));
+        let buf = and(&d, &dif);
+        let sc = score(&buf);
         if sc > 100 {
-            frames[i].save(&format!("movie/frame-{:>08}.jpg", i)).unwrap();
+            buf.save(format!("movie/diff-{:>08}.jpg", i)).unwrap();
+            n.save(format!("movie/frame-{:>08}.jpg", i)).unwrap();
         }
-        println!("image {:>08}, took {}, score: {}", i, Utc::now() - now, sc);
-        i += 1;
-    }
+        println!("image {:>08}, score: {}", i, sc);
+        (i + 1, n, d)
+    });
 }
