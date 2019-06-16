@@ -5,7 +5,6 @@ version = "0.0.1"
 [dependencies]
 image =	"0.21.2"
 rscam =	"*"
-chrono = "*"
 clap = "*"
 
 [features]

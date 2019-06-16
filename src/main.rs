@@ -1,19 +1,17 @@
-extern crate chrono;
 extern crate clap;
 extern crate image;
 extern crate rscam;
 
-use chrono::prelude::*;
 use clap::{App, Arg};
 use image::imageops::filter3x3;
 use image::jpeg::JPEGDecoder;
 use image::{
-    ConvertBuffer, GrayImage, ImageBuffer, ImageDecoder, ImageResult, Luma, Pixel, RgbImage,
+    ColorType, ConvertBuffer, GrayImage, ImageBuffer, ImageDecoder, ImageResult, Luma, Pixel, Rgb,
 };
 use rscam::{Camera, Config};
-use std::env;
 use std::fs;
 use std::io::Read;
+use std::path::Path;
 
 fn and<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
 where
@@ -89,6 +87,7 @@ where
 
 fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
     let dim = img.dimensions();
+    let typ = img.colortype();
     let vec = img
         .read_image_with_progress(|p| println!("{:?}", p))
         .unwrap();
@@ -99,8 +98,15 @@ fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
         dim.1,
         dim.0 * dim.1
     );
-    let buf: RgbImage = ImageBuffer::from_vec(dim.0 as u32, dim.1 as u32, vec).unwrap();
-    return buf.convert();
+    return match typ {
+        ColorType::Gray(_) => ImageBuffer::from_vec(dim.0 as u32, dim.1 as u32, vec).unwrap(),
+        ColorType::RGB(_) => {
+            ImageBuffer::<Rgb<u8>, Vec<u8>>::from_vec(dim.0 as u32, dim.1 as u32, vec)
+                .unwrap()
+                .convert()
+        }
+        _ => panic!("unsupported color type"),
+    };
 }
 
 fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
@@ -116,42 +122,62 @@ fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
 }
 
 fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
+    println!("name={}", name);
     return match fs::File::open(name) {
         Ok(f) => JPEGDecoder::new(f),
         Err(err) => Err(image::ImageError::IoError(err)),
     };
 }
 
-struct CameraIter {
-    camera: Camera,
-}
-struct ImageDirIter {
-    dir: fs::ReadDir,
+enum ImageIter {
+    CameraIter(Camera),
+    ImageDirIter(fs::ReadDir),
 }
 
-impl Iterator for CameraIter {
+impl Iterator for ImageIter {
     type Item = GrayImage;
     fn next(&mut self) -> Option<Self::Item> {
-        let frame = self.camera.capture().unwrap();
-        return Some(from_yuyv_vec(frame[..].to_vec()));
-    }
-}
-
-impl Iterator for ImageDirIter {
-    type Item = GrayImage;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.dir.next() {
-            Some(entry) => match prepare(
-                &entry
-                    .map(|e| e.file_name().to_str().unwrap().to_string())
-                    .unwrap(),
-            ) {
-                Ok(image) => Some(to_buffer(image)),
-                Err(_) => None,
+        match self {
+            ImageIter::CameraIter(cam) => {
+                let frame = cam.capture().unwrap();
+                Some(from_yuyv_vec(frame[..].to_vec()))
+            }
+            ImageIter::ImageDirIter(dir) => match dir.next() {
+                Some(entry) => match prepare(
+                    &entry
+                        .map(|e| e.path().as_path().to_str().unwrap().to_string())
+                        .unwrap(),
+                ) {
+                    Ok(image) => Some(to_buffer(image)),
+                    Err(e) => {
+                        println!("error={}", e);
+                        None
+                    }
+                },
+                None => None,
             },
-            None => None,
         }
     }
+}
+
+fn start_camera(dev: &str) -> ImageIter {
+    let mut camera = match Camera::new(dev) {
+        Ok(c) => c,
+        Err(e) => panic! {format!("failed to open camera: {}", e)},
+    };
+    camera
+        .start(&Config {
+            interval: (1, 10),
+            resolution: (1280, 720),
+            format: b"YUYV",
+            ..Default::default()
+        })
+        .expect("failed to start camera");
+    for feat in camera.formats() {
+        let info = feat.unwrap();
+        println!("{:?}: {}", info.format, info.description);
+    }
+    return ImageIter::CameraIter(camera);
 }
 
 fn main() {
@@ -168,44 +194,48 @@ fn main() {
         .arg(
             Arg::with_name("dir")
                 .short("i")
-                .long("image")
+                .long("image_dir")
                 .takes_value(true)
                 .help("image directory used instead of camera"),
         )
+        .arg(
+            Arg::with_name("rotation")
+                .short("r")
+                .long("record_rotation")
+                .takes_value(true)
+                .default_value("3000")
+                .help("how many pics to take before rotate its numbering"),
+        )
         .get_matches();
 
-    let mut camera = match Camera::new(matches.value_of("device").unwrap()) {
-        Ok(c) => c,
-        Err(e) => panic! {format!("failed to open camera: {}", e)},
+    let mut iter = if matches.is_present("dir") {
+        ImageIter::ImageDirIter(fs::read_dir(Path::new(matches.value_of("dir").unwrap())).unwrap())
+    } else {
+        start_camera(matches.value_of("device").unwrap())
     };
-    camera
-        .start(&Config {
-            interval: (1, 10),
-            resolution: (1280, 720),
-            format: b"YUYV",
-            ..Default::default()
-        })
-        .expect("failed to start camera");
-    for feat in camera.formats() {
-        let info = feat.unwrap();
-        println!("{:?}: {}", info.format, info.description);
-    }
 
-    // To be filled in i == 1 condition before use
-    let white: GrayImage = ImageBuffer::from_pixel(1280, 720, Luma { data: [0] });
+    let rot: u32 = u32::from_str_radix(matches.value_of("rotation").unwrap(), 10).unwrap();
 
-    let mut iter = CameraIter { camera };
+    // temporal first diff image
+    let black: GrayImage = ImageBuffer::from_pixel(1280, 720, Luma { data: [0] });
+
+    // first frame
     let f = iter.next().unwrap();
 
-    iter.fold((0, f, white), |(i, prev, dif), n| {
+    iter.fold((0, f, black), |(i, prev, dif), n| {
         let d = binarize(&diff(&prev, &n));
         let buf = and(&d, &dif);
         let sc = score(&buf);
+        let mut j = i;
         if sc > 100 {
+            j = i + 1;
+            if j > rot {
+                j = 0;
+            }
             buf.save(format!("movie/diff-{:>08}.jpg", i)).unwrap();
             n.save(format!("movie/frame-{:>08}.jpg", i)).unwrap();
         }
         println!("image {:>08}, score: {}", i, sc);
-        (i + 1, n, d)
+        (j, n, d)
     });
 }
