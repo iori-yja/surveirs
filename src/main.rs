@@ -204,6 +204,14 @@ fn main() {
                 .default_value("3000")
                 .help("how many pics to take before rotate its numbering"),
         )
+        .arg(
+            Arg::with_name("start_from")
+                .short("s")
+                .long("start-count")
+                .takes_value(true)
+                .default_value("0")
+                .help("the start number to count the saved frame"),
+        )
         .get_matches();
 
     let mut iter = if matches.is_present("dir") {
@@ -213,6 +221,7 @@ fn main() {
     };
 
     let rot: u32 = u32::from_str_radix(matches.value_of("rotation").unwrap(), 10).unwrap();
+    let start: u32 = u32::from_str_radix(matches.value_of("start_from").unwrap(), 10).unwrap();
 
     // temporal first diff image
     let black: GrayImage = ImageBuffer::from_pixel(1280, 720, Luma { data: [0] });
@@ -237,17 +246,14 @@ fn main() {
         }
     });
 
-    iter.map(|x| Arc::new(x))
-        .fold((0, Arc::new(f), Arc::new(black)), |(i, prev, dif), n| {
+    iter.map(|x| Arc::new(x)).fold(
+        (start, Arc::new(f), Arc::new(black)),
+        |(i, prev, dif), n| {
             let d = binarize(&diff(&prev, &n));
             let buf = and(&d, &dif);
             let sc = score(&buf);
             let mut j = i;
             if sc > 100 {
-                j = i + 1;
-                if j > rot {
-                    j = 0;
-                }
                 let sent_n = Arc::clone(&n);
                 sender
                     .send(Some((format!("movie/diff-{:>08}.jpg", i), Arc::new(buf))))
@@ -255,10 +261,15 @@ fn main() {
                 sender
                     .send(Some((format!("movie/frame-{:>08}.jpg", i), sent_n)))
                     .unwrap();
+                j = i + 1;
+                if j > rot {
+                    j = 0;
+                }
             }
             println!("image {:>08}, score: {}", i, sc);
             (j, n, Arc::new(d))
-        });
+        },
+    );
 
     saver_thread.join().unwrap();
 }
