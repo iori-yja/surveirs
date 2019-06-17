@@ -12,6 +12,9 @@ use rscam::{Camera, Config};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 
 fn and<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
 where
@@ -88,16 +91,11 @@ where
 fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
     let dim = img.dimensions();
     let typ = img.colortype();
-    let vec = img
-        .read_image_with_progress(|p| println!("{:?}", p))
-        .unwrap();
-    println!(
-        "size in read: {}kB. dim0 x dim1 = {} x {} = {}",
-        vec.len() / 1000,
-        dim.0,
-        dim.1,
-        dim.0 * dim.1
-    );
+    let vec = img.read_image(
+        //|p| { println!("{:?}", p) }
+        ).unwrap();
+    //println!("size in read: {}kB. dim0 x dim1 = {} x {} = {}",
+    //         vec.len() / 1000, dim.0, dim.1, dim.0 * dim.1);
     return match typ {
         ColorType::Gray(_) => ImageBuffer::from_vec(dim.0 as u32, dim.1 as u32, vec).unwrap(),
         ColorType::RGB(_) => {
@@ -122,7 +120,7 @@ fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
 }
 
 fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
-    println!("name={}", name);
+    //println!("name={}", name);
     return match fs::File::open(name) {
         Ok(f) => JPEGDecoder::new(f),
         Err(err) => Err(image::ImageError::IoError(err)),
@@ -222,20 +220,45 @@ fn main() {
     // first frame
     let f = iter.next().unwrap();
 
-    iter.fold((0, f, black), |(i, prev, dif), n| {
-        let d = binarize(&diff(&prev, &n));
-        let buf = and(&d, &dif);
-        let sc = score(&buf);
-        let mut j = i;
-        if sc > 100 {
-            j = i + 1;
-            if j > rot {
-                j = 0;
-            }
-            buf.save(format!("movie/diff-{:>08}.jpg", i)).unwrap();
-            n.save(format!("movie/frame-{:>08}.jpg", i)).unwrap();
+    let (sender, receiver): (
+        mpsc::Sender<Option<(String, Arc<GrayImage>)>>,
+        mpsc::Receiver<Option<(String, Arc<GrayImage>)>>,
+    ) = mpsc::channel();
+    let saver_thread = thread::spawn(move || {
+        while true {
+            match receiver.recv().unwrap() {
+                Some((name, data)) => {
+                    data.save(name);
+                }
+                None => {
+                    break;
+                }
+            };
         }
-        println!("image {:>08}, score: {}", i, sc);
-        (j, n, d)
     });
+
+    iter.map(|x| Arc::new(x))
+        .fold((0, Arc::new(f), Arc::new(black)), |(i, prev, dif), n| {
+            let d = binarize(&diff(&prev, &n));
+            let buf = and(&d, &dif);
+            let sc = score(&buf);
+            let mut j = i;
+            if sc > 100 {
+                j = i + 1;
+                if j > rot {
+                    j = 0;
+                }
+                let sent_n = Arc::clone(&n);
+                sender
+                    .send(Some((format!("movie/diff-{:>08}.jpg", i), Arc::new(buf))))
+                    .unwrap();
+                sender
+                    .send(Some((format!("movie/frame-{:>08}.jpg", i), sent_n)))
+                    .unwrap();
+            }
+            println!("image {:>08}, score: {}", i, sc);
+            (j, n, Arc::new(d))
+        });
+
+    saver_thread.join().unwrap();
 }
