@@ -233,17 +233,15 @@ fn main() {
         mpsc::Sender<Option<(String, Arc<GrayImage>)>>,
         mpsc::Receiver<Option<(String, Arc<GrayImage>)>>,
     ) = mpsc::channel();
-    let saver_thread = thread::spawn(move || {
-        while true {
-            match receiver.recv().unwrap() {
-                Some((name, data)) => {
-                    data.save(name);
-                }
-                None => {
-                    break;
-                }
-            };
-        }
+    let saver_thread = thread::spawn(move || loop {
+        match receiver.recv().unwrap() {
+            Some((name, data)) => {
+                data.save(name).unwrap();
+            }
+            None => {
+                break;
+            }
+        };
     });
 
     iter.map(|x| Arc::new(x)).fold(
@@ -270,6 +268,7 @@ fn main() {
             (j, n, Arc::new(d))
         },
     );
+    sender.send(None).unwrap();
 
     saver_thread.join().unwrap();
 }
