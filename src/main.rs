@@ -10,7 +10,7 @@ use image::{
 };
 use rscam::{Camera, Config};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, BufReader};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -23,11 +23,17 @@ where
     let mut dst = Vec::with_capacity(ima.len());
     let dim = ima.dimensions();
 
-    let bufa = ima.pixels();
-    let bufb = imb.pixels();
-    for (a, b) in bufa.zip(bufb) {
-        let ax = a.to_luma().data[0] as i64;
-        let bx = b.to_luma().data[0] as i64;
+    let flat_a = ima.as_flat_samples();
+    let flat_b = imb.as_flat_samples();
+
+    let (bufa, bufb) = match (flat_a.image_slice(), flat_b.image_slice()) {
+        (Some(bufa), Some(bufb)) => (bufa, bufb),
+        _ => panic!("invalid buffer"),
+    };
+
+    for (a, b) in bufa.iter().zip(bufb.iter()) {
+        let ax = (*a) as i32;
+        let bx = (*b) as i32;
         let p = if (ax - bx).abs() < 50 { ax } else { 0 };
         dst.push(p as u8);
     }
@@ -52,12 +58,18 @@ where
     let bria = brightness(ima);
     let brib = brightness(imb);
 
-    let bufa = ima.pixels();
-    let bufb = imb.pixels();
-    for (a, b) in bufa.zip(bufb) {
-        let ax = a.to_luma().data[0] as i64 * brib;
-        let bx = b.to_luma().data[0] as i64 * bria;
-        let p = if ax > bx { ax - bx } else { bx - ax } * 2 / (brib + bria);
+    let flat_a = ima.as_flat_samples();
+    let flat_b = imb.as_flat_samples();
+
+    let (bufa, bufb) = match (flat_a.image_slice(), flat_b.image_slice()) {
+        (Some(bufa), Some(bufb)) => (bufa, bufb),
+        _ => panic!("invalid buffer"),
+    };
+
+    for (a, b) in bufa.iter().zip(bufb.iter()) {
+        let ax = (*a) as i64 * brib;
+        let bx = (*b) as i64 * bria;
+        let p = (ax - bx).abs() * 2 / (brib + bria);
         dst.push(p as u8);
     }
     return ImageBuffer::from_vec(dim.0, dim.1, dst).unwrap();
@@ -119,10 +131,13 @@ fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
     .unwrap();
 }
 
-fn prepare(name: &String) -> ImageResult<JPEGDecoder<std::fs::File>> {
+fn prepare(name: &String) -> ImageResult<JPEGDecoder<BufReader<std::fs::File>>> {
     //println!("name={}", name);
     return match fs::File::open(name) {
-        Ok(f) => JPEGDecoder::new(f),
+        Ok(f) => {
+            let mut reader = BufReader::new(f);
+            JPEGDecoder::new(reader)
+        },
         Err(err) => Err(image::ImageError::IoError(err)),
     };
 }
