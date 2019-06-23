@@ -40,13 +40,12 @@ where
     return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
 }
 
-fn brightness<P>(im: &ImageBuffer<P, Vec<u8>>) -> i64
+fn brightness<P>(im: &ImageBuffer<P, Vec<u8>>) -> i32
 where
     P: Pixel<Subpixel = u8> + 'static,
 {
-    return im
-        .pixels()
-        .fold(0 as i64, |b, p| b + p.to_luma().data[0] as i64);
+    let br = im.pixels().fold(0 as u64, |b, p| b + p.to_luma().data[0] as u64);
+    return (br >> 5) as i32;
 }
 
 fn diff<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
@@ -67,15 +66,15 @@ where
     };
 
     for (a, b) in bufa.iter().zip(bufb.iter()) {
-        let ax = (*a) as i64 * brib;
-        let bx = (*b) as i64 * bria;
+        let ax = (*a) as i32 * brib;
+        let bx = (*b) as i32 * bria;
         let p = (ax - bx).abs() * 2 / (brib + bria);
         dst.push(p as u8);
     }
     return ImageBuffer::from_vec(dim.0, dim.1, dst).unwrap();
 }
 
-fn score<P: Pixel<Subpixel = u8> + 'static>(im: &ImageBuffer<P, Vec<u8>>) -> u64 {
+fn score<P: Pixel<Subpixel = u8> + 'static>(im: &ImageBuffer<P, Vec<u8>>) -> u32 {
     let mut sc = 0;
     for a in im.pixels() {
         sc += if a.to_luma().data[0] > 64 { 1 } else { 0 };
