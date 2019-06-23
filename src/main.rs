@@ -103,11 +103,8 @@ where
 fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
     let dim = img.dimensions();
     let typ = img.colortype();
-    let vec = img.read_image(
-        //|p| { println!("{:?}", p) }
-        ).unwrap();
-    //println!("size in read: {}kB. dim0 x dim1 = {} x {} = {}",
-    //         vec.len() / 1000, dim.0, dim.1, dim.0 * dim.1);
+    let vec = img.read_image().unwrap();
+
     return match typ {
         ColorType::Gray(_) => ImageBuffer::from_vec(dim.0 as u32, dim.1 as u32, vec).unwrap(),
         ColorType::RGB(_) => {
@@ -119,7 +116,7 @@ fn to_buffer<R: Read>(img: JPEGDecoder<R>) -> GrayImage {
     };
 }
 
-fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
+fn from_yuyv_vec(data: Vec<u8>) -> Option<GrayImage> {
     return ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(
         1280,
         720, // size is temporary fixed as its camera setting
@@ -127,8 +124,7 @@ fn from_yuyv_vec(data: Vec<u8>) -> GrayImage {
             .step_by(2) // skip u and v data
             .cloned()
             .collect(),
-    )
-    .unwrap();
+    );
 }
 
 fn prepare(name: &String) -> ImageResult<JPEGDecoder<BufReader<std::fs::File>>> {
@@ -153,7 +149,7 @@ impl Iterator for ImageIter {
         match self {
             ImageIter::CameraIter(cam) => {
                 let frame = cam.capture().unwrap();
-                Some(from_yuyv_vec(frame[..].to_vec()))
+                from_yuyv_vec(frame[..].to_vec())
             }
             ImageIter::ImageDirIter(dir) => match dir.next() {
                 Some(entry) => match prepare(
@@ -268,12 +264,8 @@ fn main() {
             let mut j = i;
             if sc > 100 {
                 let sent_n = Arc::clone(&n);
-                sender
-                    .send(Some((format!("movie/diff-{:>08}.jpg", i), Arc::new(buf))))
-                    .unwrap();
-                sender
-                    .send(Some((format!("movie/frame-{:>08}.jpg", i), sent_n)))
-                    .unwrap();
+                sender.send(Some((format!("movie/diff-{:>08}.jpg", i), Arc::new(buf))));
+                sender.send(Some((format!("movie/frame-{:>08}.jpg", i), sent_n)));
                 j = i + 1;
                 if j > rot {
                     j = 0;
