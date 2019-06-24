@@ -3,6 +3,7 @@ extern crate image;
 extern crate rscam;
 
 use clap::{App, Arg};
+use image::gif;
 use image::imageops::filter3x3;
 use image::jpeg::JPEGDecoder;
 use image::{
@@ -10,7 +11,8 @@ use image::{
 };
 use rscam::{Camera, Config};
 use std::fs;
-use std::io::{Read, BufReader};
+use std::time::SystemTime;
+use std::io::{Read, BufReader, BufWriter};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -40,12 +42,27 @@ where
     return ImageBuffer::from_vec(dim.0, dim.1, dst).expect("test");
 }
 
+fn reduce_color<P>(im: &ImageBuffer<P, Vec<u8>>, step: u8) -> ImageBuffer<P, Vec<u8>>
+where
+    P: Pixel<Subpixel = u8> + 'static,
+{
+    let mut dst = Vec::with_capacity(im.len());
+    let dim = im.dimensions();
+
+    let flat = im.as_flat_samples();
+
+    for p in flat.image_slice().unwrap() {
+        dst.push(*p >> step);
+    }
+    return ImageBuffer::from_vec(dim.0, dim.1, dst).unwrap();
+}
+
 fn brightness<P>(im: &ImageBuffer<P, Vec<u8>>) -> i32
 where
     P: Pixel<Subpixel = u8> + 'static,
 {
     let br = im.pixels().fold(0 as u64, |b, p| b + p.to_luma().data[0] as u64);
-    return (br >> 5) as i32;
+    return (br >> 6) as i32;
 }
 
 fn diff<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
@@ -199,28 +216,37 @@ fn main() {
                 .help("device name"),
         )
         .arg(Arg::with_name("forever").short("f").help("run forever"))
-        .arg(
-            Arg::with_name("dir")
+        .arg(Arg::with_name("dir")
                 .short("i")
                 .long("image_dir")
                 .takes_value(true)
                 .help("image directory used instead of camera"),
-        )
-        .arg(
-            Arg::with_name("rotation")
+        ).arg(Arg::with_name("rotation")
                 .short("r")
                 .long("record_rotation")
                 .takes_value(true)
                 .default_value("3000")
                 .help("how many pics to take before rotate its numbering"),
-        )
-        .arg(
-            Arg::with_name("start_from")
+        ).arg(Arg::with_name("start_from")
                 .short("s")
                 .long("start-count")
                 .takes_value(true)
                 .default_value("0")
                 .help("the start number to count the saved frame"),
+        ).arg(Arg::with_name("dst")
+                .short("d")
+                .long("dst")
+                .takes_value(true)
+                .default_value("movie")
+                .help("destination directory"),
+        ).arg(Arg::with_name("gif")
+                .short("g")
+                .long("gif")
+                .help("gif mode"),
+        ).arg(Arg::with_name("jpeg")
+                .short("j")
+                .long("jpeg")
+                .help("jpeg mode"),
         )
         .get_matches();
 
@@ -232,48 +258,105 @@ fn main() {
 
     let rot: u32 = u32::from_str_radix(matches.value_of("rotation").unwrap(), 10).unwrap();
     let start: u32 = u32::from_str_radix(matches.value_of("start_from").unwrap(), 10).unwrap();
-
-    // temporal first diff image
-    let black: GrayImage = ImageBuffer::from_pixel(1280, 720, Luma { data: [0] });
-
-    // first frame
-    let f = iter.next().unwrap();
+    let dst = matches.value_of("dst").unwrap().to_string();
+    let gif = matches.is_present("gif");
+    let jpg = !gif || matches.is_present("jpeg");
 
     let (sender, receiver): (
-        mpsc::Sender<Option<(String, Arc<GrayImage>)>>,
-        mpsc::Receiver<Option<(String, Arc<GrayImage>)>>,
+        mpsc::Sender<Option<Option<(u32, Arc<GrayImage>)>>>,
+        mpsc::Receiver<Option<Option<(u32, Arc<GrayImage>)>>>,
     ) = mpsc::channel();
-    let saver_thread = thread::spawn(move || loop {
-        match receiver.recv().unwrap() {
-            Some((name, data)) => {
-                data.save(name).unwrap();
-            }
-            None => {
-                break;
+
+    // palette for gif; map the value to monochrome gradation palette
+    let palette = if gif {
+        let mut init = Vec::<u8>::with_capacity(16 * 3);
+        for i in 0..15 {
+            init.push(i * 16); // r
+            init.push(i * 16); // g
+            init.push(i * 16); // b
+        }
+        init
+    } else {Vec::new()};
+
+    let saver_thread = thread::spawn(move || {
+        let mut enc: Option<gif::Encoder<BufWriter<fs::File>>> = None;
+        loop {
+            match receiver.recv().unwrap() {
+                Some(Some((name, data))) => {
+                    if gif {
+                        if enc.is_none() {
+                            enc = Some(gif::Encoder::new(BufWriter::new(
+                                fs::File::create(format!("{}/animation-{:>06}.gif", dst, name)).unwrap()
+                            )));
+                        }
+                        let frame = gif::Frame::from_palette_pixels(1280, 720, &reduce_color(&data, 4), &palette, None);
+                        let mut encoder = enc.unwrap();
+                        encoder.encode(&frame).unwrap();
+                        enc = Some(encoder);
+                    }
+                    if jpg {
+                        data.save(format!("{}/picture-{:06}.jpg", &dst, name)).unwrap();
+                    }
+                },
+                Some(None) => {
+                    enc = None;
+                },
+                None => {
+                    break;
+                },
             }
         };
     });
 
-    iter.map(|x| Arc::new(x)).fold(
-        (start, Arc::new(f), Arc::new(black)),
-        |(i, prev, dif), n| {
-            let d = binarize(&diff(&prev, &n));
-            let buf = and(&d, &dif);
+    struct ProcessingContext<T> {
+        index: u32,
+        prev: Arc<T>,
+        diff: Arc<T>,
+        avg_ms: f32,
+        start_time: SystemTime,
+        is_prev_sent: bool,
+    }
+
+    // temporal first diff image
+    let black: GrayImage = ImageBuffer::from_pixel(1280, 720, Luma { data: [0] });
+
+    let init_context = ProcessingContext::<GrayImage> {
+        index: start,
+        prev: Arc::new(iter.next().unwrap()),
+        diff: Arc::new(black),
+        avg_ms: 1.0,
+        start_time: SystemTime::now(),
+        is_prev_sent: false,
+    };
+
+    iter.map(|x| Arc::new(x)).fold(init_context,
+        |context, current_img| {
+            let d = binarize(&diff(&context.prev, &current_img));
+            let buf = and(&d, &context.diff);
             let sc = score(&buf);
-            let mut j = i;
+            let mut sent = false;
             if sc > 100 {
-                let sent_n = Arc::clone(&n);
-                sender.send(Some((format!("movie/diff-{:>08}.jpg", i), Arc::new(buf))));
-                sender.send(Some((format!("movie/frame-{:>08}.jpg", i), sent_n)));
-                j = i + 1;
-                if j > rot {
-                    j = 0;
-                }
+                let sent_n = Arc::clone(&current_img);
+                sender.send(Some(Some((context.index, sent_n))));
+                sent = true;
+            } else if context.is_prev_sent {
+                sender.send(Some(None));
             }
-            println!("image {:>08}, score: {}", i, sc);
-            (j, n, Arc::new(d))
+            let t = context.avg_ms * 0.8 + context.start_time.elapsed().map(|x| x.as_millis() as f32).unwrap_or(1000.0) * 0.2;
+
+            print!("\rimage {:>08}, avg_time: {:>7.3}ms, score: {:>10}", context.index, t, sc);
+            ProcessingContext::<GrayImage> {
+                index: if sent { context.index + 1 % rot } else { context.index },
+                prev: current_img,
+                diff: Arc::new(d),
+                avg_ms: t,
+                start_time: SystemTime::now(),
+                is_prev_sent: sent,
+            }
         },
     );
+
+    println!("\nCapturing ended. Finishing...");
     sender.send(None).unwrap();
 
     saver_thread.join().unwrap();
