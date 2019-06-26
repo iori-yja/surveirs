@@ -6,6 +6,7 @@ version = "0.0.1"
 image =	"0.21.2"
 rscam =	"*"
 clap = "*"
+reqwest = "*"
 
 [features]
 no_wrapper = ['rscam/no_wrapper']

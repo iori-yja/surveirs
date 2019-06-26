@@ -1,6 +1,7 @@
 extern crate clap;
 extern crate image;
 extern crate rscam;
+extern crate reqwest;
 
 use clap::{App, Arg};
 use image::gif;
@@ -247,6 +248,19 @@ fn main() {
                 .short("j")
                 .long("jpeg")
                 .help("jpeg mode"),
+        ).arg(Arg::with_name("post")
+                .short("p")
+                .long("post")
+                .takes_value(true)
+                .help("post the data"),
+        ).arg(Arg::with_name("basic-username")
+                .long("basic-username")
+                .takes_value(true)
+                .help("the username for basic authentication"),
+        ).arg(Arg::with_name("basic-password")
+                .long("basic-password")
+                .takes_value(true)
+                .help("the password for basic authentication"),
         )
         .get_matches();
 
@@ -261,6 +275,36 @@ fn main() {
     let dst = matches.value_of("dst").unwrap().to_string();
     let gif = matches.is_present("gif");
     let jpg = !gif || matches.is_present("jpeg");
+
+    struct Uploader {
+        client: reqwest::Client,
+        server: String,
+        user:   Option<String>,
+        pass:   Option<String>,
+    }
+
+    let mut upload_info = match (matches.value_of("post"), matches.value_of("basic-username"), matches.value_of("basic-password")) {
+        (Some(server), u, p) => {
+            Some(Uploader {client: reqwest::Client::new(), server: server.to_string(), user: u.map(|x|x.to_string()), pass: p.map(|x|x.to_string())})
+        },
+        _ => {
+            None
+        }
+    };
+
+    fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), reqwest::Error> {
+        match info {
+            Some(inf) => {
+                let file = fs::File::open(name).unwrap();
+                match (inf.user.clone(), inf.pass.clone()) {
+                    (Some(u), p) => inf.client.post(&inf.server).query(&[("name", name)]).basic_auth(u, p).body(file).send()?,
+                    (None, _) => inf.client.post(&inf.server).query(&[("name", name)]).body(file).send()?,
+                };
+                return Ok(());
+            },
+            None => {return Ok(());},
+        }
+    }
 
     let (sender, receiver): (
         mpsc::Sender<Option<Option<(u32, Arc<GrayImage>)>>>,
@@ -280,13 +324,15 @@ fn main() {
 
     let saver_thread = thread::spawn(move || {
         let mut enc: Option<gif::Encoder<BufWriter<fs::File>>> = None;
+        let mut g_name = "".to_string();
         loop {
             match receiver.recv().unwrap() {
                 Some(Some((name, data))) => {
                     if gif {
                         if enc.is_none() {
+                            g_name = format!("{}/animation-{:>06}.gif", dst, name);
                             enc = Some(gif::Encoder::new(BufWriter::new(
-                                fs::File::create(format!("{}/animation-{:>06}.gif", dst, name)).unwrap()
+                                fs::File::create(&g_name).unwrap()
                             )));
                         }
                         let frame = gif::Frame::from_palette_pixels(1280, 720, &reduce_color(&data, 4), &palette, None);
@@ -295,11 +341,20 @@ fn main() {
                         enc = Some(encoder);
                     }
                     if jpg {
-                        data.save(format!("{}/picture-{:06}.jpg", &dst, name)).unwrap();
+                        let p_name = format!("{}/picture-{:06}.jpg", &dst, name);
+                        data.save(&p_name).unwrap();
+                        match do_post(&mut upload_info, &p_name) {
+                            Ok(()) => {},
+                            Err(e) => {println!("{:?}", e)},
+                        }
                     }
                 },
                 Some(None) => {
                     enc = None;
+                    match do_post(&mut upload_info, &g_name) {
+                        Ok(()) => {},
+                        Err(e) => {println!("{:?}", e)},
+                    }
                 },
                 None => {
                     break;
