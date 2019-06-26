@@ -206,6 +206,32 @@ fn start_camera(dev: &str) -> ImageIter {
     return ImageIter::CameraIter(camera);
 }
 
+struct Uploader {
+    client: reqwest::Client,
+    server: String,
+    user:   Option<String>,
+    pass:   Option<String>,
+}
+
+fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), reqwest::Error> {
+    match info {
+        Some(inf) => {
+            let file = fs::File::open(name).unwrap();
+            match (inf.user.clone(), inf.pass.clone()) {
+                (Some(u), p) => {
+                    inf.client.post(&inf.server).query(&[("name", name)]).basic_auth(u, p).body(file).send()?;
+                },
+                (None, _) => {
+                    inf.client.post(&inf.server).query(&[("name", name)]).body(file).send()?;
+                }
+            };
+            fs::remove_file(name).unwrap();
+            return Ok(());
+        },
+        None => {return Ok(());},
+    }
+}
+
 fn main() {
     let matches = App::new("small recorder")
         .version("0.0.1")
@@ -276,13 +302,6 @@ fn main() {
     let gif = matches.is_present("gif");
     let jpg = !gif || matches.is_present("jpeg");
 
-    struct Uploader {
-        client: reqwest::Client,
-        server: String,
-        user:   Option<String>,
-        pass:   Option<String>,
-    }
-
     let mut upload_info = match (matches.value_of("post"), matches.value_of("basic-username"), matches.value_of("basic-password")) {
         (Some(server), u, p) => {
             Some(Uploader {client: reqwest::Client::new(), server: server.to_string(), user: u.map(|x|x.to_string()), pass: p.map(|x|x.to_string())})
@@ -291,20 +310,6 @@ fn main() {
             None
         }
     };
-
-    fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), reqwest::Error> {
-        match info {
-            Some(inf) => {
-                let file = fs::File::open(name).unwrap();
-                match (inf.user.clone(), inf.pass.clone()) {
-                    (Some(u), p) => inf.client.post(&inf.server).query(&[("name", name)]).basic_auth(u, p).body(file).send()?,
-                    (None, _) => inf.client.post(&inf.server).query(&[("name", name)]).body(file).send()?,
-                };
-                return Ok(());
-            },
-            None => {return Ok(());},
-        }
-    }
 
     let (sender, receiver): (
         mpsc::Sender<Option<Option<(u32, Arc<GrayImage>)>>>,
