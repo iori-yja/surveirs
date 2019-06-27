@@ -1,7 +1,7 @@
 extern crate clap;
 extern crate image;
-extern crate rscam;
 extern crate reqwest;
+extern crate rscam;
 
 use clap::{App, Arg};
 use image::gif;
@@ -12,12 +12,12 @@ use image::{
 };
 use rscam::{Camera, Config};
 use std::fs;
-use std::time::SystemTime;
-use std::io::{Read, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::SystemTime;
 
 fn and<P>(ima: &ImageBuffer<P, Vec<u8>>, imb: &ImageBuffer<P, Vec<u8>>) -> ImageBuffer<P, Vec<u8>>
 where
@@ -62,7 +62,9 @@ fn brightness<P>(im: &ImageBuffer<P, Vec<u8>>) -> i32
 where
     P: Pixel<Subpixel = u8> + 'static,
 {
-    let br = im.pixels().fold(0 as u64, |b, p| b + p.to_luma().data[0] as u64);
+    let br = im
+        .pixels()
+        .fold(0 as u64, |b, p| b + p.to_luma().data[0] as u64);
     return (br >> 6) as i32;
 }
 
@@ -150,7 +152,7 @@ fn prepare(name: &String) -> ImageResult<JPEGDecoder<BufReader<std::fs::File>>> 
         Ok(f) => {
             let mut reader = BufReader::new(f);
             JPEGDecoder::new(reader)
-        },
+        }
         Err(err) => Err(image::ImageError::IoError(err)),
     };
 }
@@ -209,8 +211,8 @@ fn start_camera(dev: &str) -> ImageIter {
 struct Uploader {
     client: reqwest::Client,
     server: String,
-    user:   Option<String>,
-    pass:   Option<String>,
+    user: Option<String>,
+    pass: Option<String>,
 }
 
 fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), reqwest::Error> {
@@ -219,16 +221,27 @@ fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), reqwest::Er
             let file = fs::File::open(name).unwrap();
             match (inf.user.clone(), inf.pass.clone()) {
                 (Some(u), p) => {
-                    inf.client.post(&inf.server).query(&[("name", name)]).basic_auth(u, p).body(file).send()?;
-                },
+                    inf.client
+                        .post(&inf.server)
+                        .query(&[("name", name)])
+                        .basic_auth(u, p)
+                        .body(file)
+                        .send()?;
+                }
                 (None, _) => {
-                    inf.client.post(&inf.server).query(&[("name", name)]).body(file).send()?;
+                    inf.client
+                        .post(&inf.server)
+                        .query(&[("name", name)])
+                        .body(file)
+                        .send()?;
                 }
             };
             fs::remove_file(name).unwrap();
             return Ok(());
-        },
-        None => {return Ok(());},
+        }
+        None => {
+            return Ok(());
+        }
     }
 }
 
@@ -243,47 +256,64 @@ fn main() {
                 .help("device name"),
         )
         .arg(Arg::with_name("forever").short("f").help("run forever"))
-        .arg(Arg::with_name("dir")
+        .arg(
+            Arg::with_name("dir")
                 .short("i")
                 .long("image_dir")
                 .takes_value(true)
                 .help("image directory used instead of camera"),
-        ).arg(Arg::with_name("rotation")
+        )
+        .arg(
+            Arg::with_name("rotation")
                 .short("r")
                 .long("record_rotation")
                 .takes_value(true)
                 .default_value("3000")
                 .help("how many pics to take before rotate its numbering"),
-        ).arg(Arg::with_name("start_from")
+        )
+        .arg(
+            Arg::with_name("start_from")
                 .short("s")
                 .long("start-count")
                 .takes_value(true)
                 .default_value("0")
                 .help("the start number to count the saved frame"),
-        ).arg(Arg::with_name("dst")
+        )
+        .arg(
+            Arg::with_name("dst")
                 .short("d")
                 .long("dst")
                 .takes_value(true)
                 .default_value("movie")
                 .help("destination directory"),
-        ).arg(Arg::with_name("gif")
+        )
+        .arg(
+            Arg::with_name("gif")
                 .short("g")
                 .long("gif")
                 .help("gif mode"),
-        ).arg(Arg::with_name("jpeg")
+        )
+        .arg(
+            Arg::with_name("jpeg")
                 .short("j")
                 .long("jpeg")
                 .help("jpeg mode"),
-        ).arg(Arg::with_name("post")
+        )
+        .arg(
+            Arg::with_name("post")
                 .short("p")
                 .long("post")
                 .takes_value(true)
                 .help("post the data"),
-        ).arg(Arg::with_name("basic-username")
+        )
+        .arg(
+            Arg::with_name("basic-username")
                 .long("basic-username")
                 .takes_value(true)
                 .help("the username for basic authentication"),
-        ).arg(Arg::with_name("basic-password")
+        )
+        .arg(
+            Arg::with_name("basic-password")
                 .long("basic-password")
                 .takes_value(true)
                 .help("the password for basic authentication"),
@@ -302,13 +332,18 @@ fn main() {
     let gif = matches.is_present("gif");
     let jpg = !gif || matches.is_present("jpeg");
 
-    let mut upload_info = match (matches.value_of("post"), matches.value_of("basic-username"), matches.value_of("basic-password")) {
-        (Some(server), u, p) => {
-            Some(Uploader {client: reqwest::Client::new(), server: server.to_string(), user: u.map(|x|x.to_string()), pass: p.map(|x|x.to_string())})
-        },
-        _ => {
-            None
-        }
+    let mut upload_info = match (
+        matches.value_of("post"),
+        matches.value_of("basic-username"),
+        matches.value_of("basic-password"),
+    ) {
+        (Some(server), u, p) => Some(Uploader {
+            client: reqwest::Client::new(),
+            server: server.to_string(),
+            user: u.map(|x| x.to_string()),
+            pass: p.map(|x| x.to_string()),
+        }),
+        _ => None,
     };
 
     let (sender, receiver): (
@@ -325,7 +360,9 @@ fn main() {
             init.push(i * 16); // b
         }
         init
-    } else {Vec::new()};
+    } else {
+        Vec::new()
+    };
 
     let saver_thread = thread::spawn(move || {
         let mut enc: Option<gif::Encoder<BufWriter<fs::File>>> = None;
@@ -337,10 +374,16 @@ fn main() {
                         if enc.is_none() {
                             g_name = format!("{}/animation-{:>06}.gif", dst, name);
                             enc = Some(gif::Encoder::new(BufWriter::new(
-                                fs::File::create(&g_name).unwrap()
+                                fs::File::create(&g_name).unwrap(),
                             )));
                         }
-                        let frame = gif::Frame::from_palette_pixels(1280, 720, &reduce_color(&data, 4), &palette, None);
+                        let frame = gif::Frame::from_palette_pixels(
+                            1280,
+                            720,
+                            &reduce_color(&data, 4),
+                            &palette,
+                            None,
+                        );
                         let mut encoder = enc.unwrap();
                         encoder.encode(&frame).unwrap();
                         enc = Some(encoder);
@@ -349,23 +392,23 @@ fn main() {
                         let p_name = format!("{}/picture-{:06}.jpg", &dst, name);
                         data.save(&p_name).unwrap();
                         match do_post(&mut upload_info, &p_name) {
-                            Ok(()) => {},
-                            Err(e) => {println!("{:?}", e)},
+                            Ok(()) => {}
+                            Err(e) => println!("{:?}", e),
                         }
                     }
-                },
+                }
                 Some(None) => {
                     enc = None;
                     match do_post(&mut upload_info, &g_name) {
-                        Ok(()) => {},
-                        Err(e) => {println!("{:?}", e)},
+                        Ok(()) => {}
+                        Err(e) => println!("{:?}", e),
                     }
-                },
+                }
                 None => {
                     break;
-                },
+                }
             }
-        };
+        }
     });
 
     struct ProcessingContext<T> {
@@ -374,7 +417,7 @@ fn main() {
         diff: Arc<T>,
         avg_ms: f32,
         start_time: SystemTime,
-        blank_frame_count: u32,
+        blank_frame_deadline: u32,
     }
 
     // temporal first diff image
@@ -386,11 +429,11 @@ fn main() {
         diff: Arc::new(black),
         avg_ms: 1.0,
         start_time: SystemTime::now(),
-        blank_frame_count: 0,
+        blank_frame_deadline: 0,
     };
 
-    iter.map(|x| Arc::new(x)).fold(init_context,
-        |context, current_img| {
+    iter.map(|x| Arc::new(x))
+        .fold(init_context, |context, current_img| {
             let d = binarize(&diff(&context.prev, &current_img));
             let buf = and(&d, &context.diff);
             let sc = score(&buf);
@@ -398,23 +441,44 @@ fn main() {
                 let sent_n = Arc::clone(&current_img);
                 sender.send(Some(Some((context.index, sent_n))));
                 true
-            } else if context.blank_frame_count == 70 /* wait for approx. 7s */ {
+            } else if context.blank_frame_deadline == 1 {
                 sender.send(Some(None));
+                true
+            } else {
                 false
-            } else { false };
-            let t = context.avg_ms * 0.8 + context.start_time.elapsed().map(|x| x.as_millis() as f32).unwrap_or(1000.0) * 0.2;
+            };
+            let t = context.avg_ms * 0.8
+                + context
+                    .start_time
+                    .elapsed()
+                    .map(|x| x.as_millis() as f32)
+                    .unwrap_or(1000.0)
+                    * 0.2;
 
-            print!("\rimage {:>08}, avg_time: {:>7.3}ms, score: {:>10}", context.index, t, sc);
+            print!(
+                "\rimage {:>08}, avg_time: {:>7.3}ms, score: {:>10}",
+                context.index, t, sc
+            );
             ProcessingContext::<GrayImage> {
-                index: if sent { (context.index + 1) % rot } else { context.index },
+                index: if sent {
+                    (context.index + 1) % rot
+                } else {
+                    context.index
+                },
                 prev: current_img,
                 diff: Arc::new(d),
                 avg_ms: t,
                 start_time: SystemTime::now(),
-                blank_frame_count: if sent { /* reset */ 0 } else { context.blank_frame_count + 1 },
+                blank_frame_deadline: if sent {
+                    /* reset deadline approx. 7s */
+                    70
+                } else if context.blank_frame_deadline == 0 {
+                    0
+                } else {
+                    context.blank_frame_deadline - 1
+                },
             }
-        },
-    );
+        });
 
     println!("\nCapturing ended. Finishing...");
     sender.send(None).unwrap();
