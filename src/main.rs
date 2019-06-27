@@ -374,7 +374,7 @@ fn main() {
         diff: Arc<T>,
         avg_ms: f32,
         start_time: SystemTime,
-        is_prev_sent: bool,
+        blank_frame_count: u32,
     }
 
     // temporal first diff image
@@ -386,7 +386,7 @@ fn main() {
         diff: Arc::new(black),
         avg_ms: 1.0,
         start_time: SystemTime::now(),
-        is_prev_sent: false,
+        blank_frame_count: 0,
     };
 
     iter.map(|x| Arc::new(x)).fold(init_context,
@@ -394,24 +394,24 @@ fn main() {
             let d = binarize(&diff(&context.prev, &current_img));
             let buf = and(&d, &context.diff);
             let sc = score(&buf);
-            let mut sent = false;
-            if sc > 100 {
+            let sent = if sc > 100 {
                 let sent_n = Arc::clone(&current_img);
                 sender.send(Some(Some((context.index, sent_n))));
-                sent = true;
-            } else if context.is_prev_sent {
+                true
+            } else if context.blank_frame_count == 70 /* wait for approx. 7s */ {
                 sender.send(Some(None));
-            }
+                false
+            } else { false };
             let t = context.avg_ms * 0.8 + context.start_time.elapsed().map(|x| x.as_millis() as f32).unwrap_or(1000.0) * 0.2;
 
             print!("\rimage {:>08}, avg_time: {:>7.3}ms, score: {:>10}", context.index, t, sc);
             ProcessingContext::<GrayImage> {
-                index: if sent { context.index + 1 % rot } else { context.index },
+                index: if sent { (context.index + 1) % rot } else { context.index },
                 prev: current_img,
                 diff: Arc::new(d),
                 avg_ms: t,
                 start_time: SystemTime::now(),
-                is_prev_sent: sent,
+                blank_frame_count: if sent { /* reset */ 0 } else { context.blank_frame_count + 1 },
             }
         },
     );
