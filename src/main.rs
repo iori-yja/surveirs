@@ -178,7 +178,7 @@ impl Iterator for ImageIter {
                 ) {
                     Ok(image) => Some(to_buffer(image)),
                     Err(e) => {
-                        println!("error={}", e);
+                        eprintln!("dirIter failed: error={}", e);
                         None
                     }
                 },
@@ -203,7 +203,7 @@ fn start_camera(dev: &str) -> ImageIter {
         .expect("failed to start camera");
     for feat in camera.formats() {
         let info = feat.unwrap();
-        println!("{:?}: {}", info.format, info.description);
+        println!("failed to start camera: {:?}: {}", info.format, info.description);
     }
     return ImageIter::CameraIter(camera);
 }
@@ -397,7 +397,7 @@ fn main() {
                         data.save(&p_name).unwrap();
                         match do_post(&mut upload_info, &p_name) {
                             Ok(()) => {}
-                            Err(e) => println!("{:?}", e),
+                            Err(e) => eprintln!("do_post failed(jpg): {:?}", e),
                         }
                     }
                 }
@@ -405,7 +405,7 @@ fn main() {
                     enc = None;
                     match do_post(&mut upload_info, &g_name) {
                         Ok(()) => {}
-                        Err(e) => println!("{:?}", e),
+                        Err(e) => eprintln!("do_post failed(gif): {:?}", e),
                     }
                 }
                 None => {
