@@ -459,8 +459,8 @@ fn main() {
                     .unwrap_or(1000.0)
                     * 0.2;
 
-            print!(
-                "\rimage {:>08}, avg_time: {:>7.3}ms, score: {:>10}",
+            println!(
+                "image {:>08}, avg_time: {:>7.3}ms, score: {:>10}",
                 context.index, t, sc
             );
             ProcessingContext::<GrayImage> {
@@ -484,7 +484,7 @@ fn main() {
             }
         });
 
-    println!("\nCapturing ended. Finishing...");
+    println!("Capturing ended. Finishing...");
     sender.send(None).unwrap();
 
     saver_thread.join().unwrap();
