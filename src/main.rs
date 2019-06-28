@@ -215,33 +215,37 @@ struct Uploader {
     pass: Option<String>,
 }
 
-fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), reqwest::Error> {
+#[derive(Debug)]
+enum UploaderError {
+    FileIOError(std::io::Error),
+    ReqwestError(reqwest::Error),
+}
+
+fn do_post(info: &mut Option<Uploader>, name: &String) -> Result<(), UploaderError> {
     match info {
-        Some(inf) => {
-            let file = fs::File::open(name).unwrap();
-            match (inf.user.clone(), inf.pass.clone()) {
-                (Some(u), p) => {
-                    inf.client
+        Some(inf) => fs::File::open(name)
+            .map_err(|e| UploaderError::FileIOError(e))
+            .and_then(|file| {
+                match (inf.user.clone(), inf.pass.clone()) {
+                    (Some(u), p) => inf
+                        .client
                         .post(&inf.server)
                         .query(&[("name", name)])
                         .basic_auth(u, p)
                         .body(file)
-                        .send()?;
-                }
-                (None, _) => {
-                    inf.client
+                        .send(),
+                    (None, _) => inf
+                        .client
                         .post(&inf.server)
                         .query(&[("name", name)])
                         .body(file)
-                        .send()?;
+                        .send(),
                 }
-            };
-            fs::remove_file(name).unwrap();
-            return Ok(());
-        }
-        None => {
-            return Ok(());
-        }
+                .map_err(|e| UploaderError::ReqwestError(e))
+            })
+            .and_then(|_| fs::remove_file(name).map_err(|e| UploaderError::FileIOError(e)))
+            .map(|_| ()),
+        None => Ok(()),
     }
 }
 
