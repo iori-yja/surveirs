@@ -447,7 +447,7 @@ fn main() {
                 true
             } else if context.blank_frame_deadline == 1 {
                 sender.send(Some(None));
-                true
+                false
             } else {
                 false
             };
